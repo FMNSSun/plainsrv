@@ -10,6 +10,7 @@ func main() {
 		Namespaces: map[string]NamespaceConfig{
 			"": NamespaceConfig{
 				BasePath: ".\\www\\",
+				Cache: make(map[string][]byte),
 			},
 		},
 	}

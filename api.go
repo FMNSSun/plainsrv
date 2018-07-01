@@ -11,6 +11,7 @@ import "io"
 import "html"
 import "net/url"
 import "strings"
+import "bytes"
 
 type ApiEnv struct {
 	Namespaces map[string]NamespaceConfig
@@ -19,6 +20,8 @@ type ApiEnv struct {
 type NamespaceConfig struct {
 	BasePath     string
 	ContentTypes map[string]string
+	MaxAge int64
+	Cache map[string][]byte
 }
 
 func (e *ApiEnv) ContentType(prefix string, fname string) string {
@@ -71,7 +74,7 @@ func openWithIndex(basePath string, relPath string) (string, *os.File, error) {
 	return relPath, file, nil
 }
 
-func sendErr(w http.ResponseWriter, err error) {
+func sendErr(w io.Writer, err error) {
 	log.Println(err.Error())
 	io.WriteString(w, "<b style=\"color: red;\">ERROR</b></main</body></html>")
 }
@@ -103,12 +106,34 @@ func (e *ApiEnv) rawGet(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	requestPath := getPath(vars["it"])
 
-	basePath, ok := e.BasePath(vars["prefix"])
+	nsconfig, ok := e.Namespaces[vars["prefix"]]
 
 	if !ok {
 		returnNotFound(w, nil)
 		return
 	}
+	
+	var out io.Writer = w
+	
+	if nsconfig.Cache != nil {
+		// caching is enabled
+		
+		v, ok := nsconfig.Cache[requestPath]
+		
+		if ok {
+			w.Write(v)
+			return
+		} else {
+			out = &bytes.Buffer{}
+			defer func() {
+				data := out.(*bytes.Buffer).Bytes()
+				nsconfig.Cache[requestPath] = data
+				w.Write(data)
+			}()
+		}
+	}
+	
+	basePath := nsconfig.BasePath
 
 	_, file, err := openWithIndex(basePath, requestPath)
 
@@ -122,7 +147,7 @@ func (e *ApiEnv) rawGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	io.Copy(w, file)
+	io.Copy(out, file)
 }
 
 func (e *ApiEnv) get(w http.ResponseWriter, r *http.Request) {
@@ -130,12 +155,34 @@ func (e *ApiEnv) get(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	requestPath := getPath(vars["it"])
 
-	basePath, ok := e.BasePath(vars["prefix"])
+	nsconfig, ok := e.Namespaces[vars["prefix"]]
 
 	if !ok {
 		returnNotFound(w, nil)
 		return
 	}
+	
+	var out io.Writer = w
+	
+	if nsconfig.Cache != nil {
+		// caching is enabled
+		
+		v, ok := nsconfig.Cache[requestPath]
+		
+		if ok {
+			w.Write(v)
+			return
+		} else {
+			out = &bytes.Buffer{}
+			defer func() {
+				data := out.(*bytes.Buffer).Bytes()
+				nsconfig.Cache[requestPath] = data
+				w.Write(data)
+			}()
+		}
+	}
+	
+	basePath := nsconfig.BasePath
 
 	relPath, file, err := openWithIndex(basePath, requestPath)
 
@@ -156,20 +203,20 @@ func (e *ApiEnv) get(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 
-	io.WriteString(w, "<html><head><title>")
-	io.WriteString(w, html.EscapeString(relPath))
-	io.WriteString(w, "</title></head><body><nav><ol>")
+	io.WriteString(out, "<html><head><title>")
+	io.WriteString(out, html.EscapeString(relPath))
+	io.WriteString(out, "</title></head><body><nav><ol>")
 
 	files, err := ioutil.ReadDir(fullDir)
 
 	if err != nil {
 		io.WriteString(w, "</ol></nav><main>")
-		sendErr(w, err)
+		sendErr(out, err)
 		return
 	}
 
 	if relDir != "." {
-		io.WriteString(w, "<li><a href=\"./../\">..</a></li>")
+		io.WriteString(out, "<li><a href=\"./../\">..</a></li>")
 	}
 
 	for _, fname := range files {
@@ -179,21 +226,21 @@ func (e *ApiEnv) get(w http.ResponseWriter, r *http.Request) {
 			fpath += "/"
 		}
 
-		io.WriteString(w, "<li><a href=\"./"+html.EscapeString(fpath)+"\">"+html.EscapeString(fpath)+"</a></li>")
+		io.WriteString(out, "<li><a href=\"./"+html.EscapeString(fpath)+"\">"+html.EscapeString(fpath)+"</a></li>")
 	}
 
-	io.WriteString(w, "</ol></nav><main>")
+	io.WriteString(out, "</ol></nav><main>")
 
 	if err != nil {
-		sendErr(w, err)
+		sendErr(out, err)
 		return
 	}
 
 	if !navOnly {
-		Format(file, w)
+		Format(file, out)
 	}
 
-	io.WriteString(w, "</main></body></html>")
+	io.WriteString(out, "</main></body></html>")
 }
 
 func NewAPI(e *ApiEnv) *mux.Router {
